@@ -6,7 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import apache_beam as beam
-from apache_beam.options.pipeline_options import PipelineOptions, SetupOptions, StandardOptions
+from apache_beam.options.pipeline_options import (
+    PipelineOptions,
+    SetupOptions,
+    StandardOptions,
+)
 from apache_beam.transforms.window import SlidingWindows
 
 
