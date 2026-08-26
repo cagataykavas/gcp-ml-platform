@@ -5,7 +5,7 @@ from pathlib import Path
 
 from google.cloud import aiplatform
 from kfp import compiler, dsl
-from kfp.dsl import Artifact, Dataset, Input, Metrics, Model, Output
+from kfp.dsl import Dataset, Input, Metrics, Model, Output
 
 
 @dsl.component(
@@ -33,7 +33,7 @@ def extract_training_data(
     )
     frame = client.query(query, job_config=config).to_dataframe()
     frame.to_parquet(dataset.path, index=False)
-    dataset.metadata["rows"] = int(len(frame))
+    dataset.metadata["rows"] = len(frame)
     dataset.metadata["source_table"] = source_table
 
 
@@ -52,6 +52,7 @@ def train_model(
     metrics: Output[Metrics],
 ) -> None:
     import json
+
     import joblib
     import pandas as pd
     from sklearn.compose import ColumnTransformer
@@ -101,7 +102,7 @@ def train_model(
         "roc_auc": float(roc_auc_score(valid[target], probability)),
         "average_precision": float(average_precision_score(valid[target], probability)),
         "brier_score": float(brier_score_loss(valid[target], probability)),
-        "validation_rows": int(len(valid)),
+        "validation_rows": len(valid),
         "event_rate": float(valid[target].mean()),
     }
 
@@ -266,9 +267,18 @@ def main() -> None:
     print(f"compiled pipeline: {args.compile}")
 
     if args.submit:
-        required = [args.project, args.pipeline_root, args.source_table, args.model_artifact_uri, args.serving_image_uri]
+        required = [
+            args.project,
+            args.pipeline_root,
+            args.source_table,
+            args.model_artifact_uri,
+            args.serving_image_uri,
+        ]
         if not all(required):
-            raise SystemExit("submission requires project, pipeline-root, source-table, model-artifact-uri and serving-image-uri")
+            raise SystemExit(
+                "submission requires project, pipeline-root, source-table, "
+                "model-artifact-uri and serving-image-uri"
+            )
         submit_pipeline(
             project=args.project,
             location=args.location,
