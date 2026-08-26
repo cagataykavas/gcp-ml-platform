@@ -1,30 +1,146 @@
 # GCP ML Platform
 
-A vendor-specific reference architecture for serving and operating ML workloads on Google Cloud.
+A Google Cloud reference architecture for **data ingestion, model training, registry, online scoring and monitoring**. The main public example is a synthetic banking-risk workload so the cloud services map to a realistic ML lifecycle instead of disconnected hello-world deployments.
+
+> Portfolio reference implementation only. All banking data and examples are synthetic.
+
+## Banking architecture
 
 ```mermaid
 flowchart LR
-    U[Client] --> LB[Cloud Load Balancing]
-    LB --> RUN[Cloud Run / GKE]
-    RUN --> MEM[(Memorystore / Redis)]
-    RUN --> SQL[(Cloud SQL / PostgreSQL)]
-    RUN --> GCS[(Cloud Storage)]
-    GCS --> BQ[(BigQuery)]
-    BQ --> VAI[Vertex AI]
-    RUN --> MON[Cloud Monitoring + Logging]
-    PUB[Pub/Sub] --> DF[Dataflow]
-    DF --> BQ
+    PUB[Pub/Sub events] --> DF[Dataflow / streaming transforms]
+    DF --> BQ[(BigQuery feature + outcome tables)]
+    GCS[(Cloud Storage datasets / artifacts)] --> VPIPE[Vertex AI Pipeline]
+    BQ --> VPIPE
+    VPIPE --> TRAIN[Training component]
+    TRAIN --> GATE[Quality gate\nROC-AUC · AP · Brier]
+    GATE --> REG[Vertex AI Model Registry]
+    REG --> ENDPOINT[Vertex AI Endpoint]
+    ENDPOINT --> SCORE[Online / batch scoring]
+    SCORE --> BQOUT[(BigQuery prediction table)]
+    BQOUT --> MON[Monitoring queries\nscore · calibration · decision rates]
+    MON --> OPS[Cloud Monitoring / alerting]
 ```
 
-## Core services demonstrated
+## What is implemented
 
-- VPC networking and private service connectivity
-- Cloud Run / GKE for inference services
-- Cloud Storage for artifacts and datasets
-- Pub/Sub + Dataflow for event/stream processing
-- BigQuery for analytics
-- Vertex AI for training, registry and endpoints
-- Cloud SQL / Memorystore for persistence and caching
-- IAM, Secret Manager, Cloud Monitoring and Logging
+### Infrastructure as Code
 
-The application logic mirrors the AWS/Azure/Huawei variants so infrastructure tradeoffs can be compared directly.
+Terraform examples provision core GCP ML infrastructure such as:
+
+- Cloud Storage;
+- Artifact Registry;
+- Cloud Run;
+- Pub/Sub;
+- BigQuery;
+- service configuration suitable for a containerized ML workload.
+
+### BigQuery → Vertex AI scoring
+
+`examples/banking_batch_scoring.py` demonstrates:
+
+1. reading ordered banking feature rows from BigQuery;
+2. converting them to Vertex AI endpoint instances;
+3. calling a managed endpoint;
+4. mapping probabilities to `auto_approve`, `human_review` and `auto_decline` routes;
+5. writing scored applications back to BigQuery.
+
+This makes the repo useful for discussing the boundary between **warehouse analytics and production model serving**.
+
+### Vertex AI Pipeline
+
+`pipelines/banking_vertex_pipeline.py` defines a KFP/Vertex-oriented lifecycle:
+
+```text
+BigQuery extract
+      ↓
+training component
+      ↓
+offline metrics
+      ↓
+quality gate
+      ↓
+Vertex Model Registry
+      ↓
+managed endpoint deployment
+```
+
+The pipeline includes explicit quality gates for ROC-AUC, average precision and Brier score. Model registration is downstream of that gate rather than happening automatically after every training run.
+
+The file can compile a pipeline specification and optionally submit a `PipelineJob`.
+
+### BigQuery monitoring
+
+`examples/banking_model_monitoring.py` provides warehouse-side monitoring for scored/labeled applications:
+
+- daily scored volume;
+- mean / standard deviation of risk score;
+- approval / decline / human-review rates;
+- labeled event rate;
+- Brier score when outcomes arrive;
+- calibration bins with predicted vs observed event rates.
+
+The goal is not to claim that SQL replaces a complete monitoring platform. It demonstrates how delayed banking outcomes can be joined back to model decisions for operational evaluation.
+
+## Core GCP service map
+
+| Concern | Google Cloud service | Portfolio use |
+|---|---|---|
+| Object storage | Cloud Storage | datasets and model artifacts |
+| Analytical warehouse | BigQuery | feature tables, predictions, delayed labels, monitoring |
+| Event messaging | Pub/Sub | transaction / application events |
+| Stream / batch processing | Dataflow | transformation and feature pipelines |
+| Managed ML | Vertex AI | pipelines, model registry, endpoints |
+| Container serving | Cloud Run | stateless APIs and lightweight inference services |
+| Kubernetes | GKE | workloads requiring Kubernetes-level control |
+| OLTP database | Cloud SQL / AlloyDB | application metadata / relational state |
+| Cache | Memorystore | Redis-style low-latency state |
+| Images | Artifact Registry | container images |
+| Secrets | Secret Manager | credentials / secret configuration |
+| Observability | Cloud Monitoring + Logging | platform metrics, logs and alerts |
+
+## BigQuery vs Cloud SQL
+
+A common interview distinction:
+
+- **BigQuery** is a serverless analytical warehouse for large scans and aggregations.
+- **Cloud SQL** is managed relational OLTP for transactional application workloads.
+
+This repository deliberately uses BigQuery for analytical/scoring history rather than pretending it is the application's transactional database.
+
+## Cloud Run vs GKE
+
+**Cloud Run** is a strong default for stateless HTTP containers when low operational overhead and autoscaling are priorities.
+
+**GKE** becomes attractive when the system requires deeper Kubernetes control: custom scheduling, complex sidecars/operators, specialized networking, multi-service platform patterns or GPU scheduling requirements.
+
+## GCP interview path represented here
+
+A candidate should be able to explain:
+
+- Pub/Sub vs BigQuery;
+- Dataflow's role between event transport and analytical storage;
+- BigQuery vs Cloud SQL;
+- Vertex AI Pipeline vs Model Registry vs Endpoint;
+- model artifact vs serving container;
+- batch vs online scoring;
+- IAM / service-account boundaries;
+- Cloud Run vs GKE;
+- Cloud Storage vs BigQuery;
+- monitoring when ground-truth labels arrive with delay;
+- why a production model needs deployment gates and lineage rather than only a `.pkl` file.
+
+## Cross-cloud translation
+
+The same logical ML workload is represented elsewhere in the portfolio so architecture can be translated rather than memorized vendor-by-vendor:
+
+| Capability | GCP | AWS analogue | Azure analogue |
+|---|---|---|---|
+| Object storage | Cloud Storage | S3 | Blob / ADLS |
+| Warehouse | BigQuery | Redshift / Athena | Synapse / Fabric |
+| Events | Pub/Sub | SNS/SQS/Kinesis/MSK depending pattern | Service Bus / Event Hubs |
+| Managed ML | Vertex AI | SageMaker | Azure ML |
+| Container runtime | Cloud Run / GKE | ECS/EKS | Container Apps/AKS |
+| Monitoring | Cloud Monitoring | CloudWatch | Azure Monitor |
+
+The intent is **concept portability**: understand what the architecture needs, then map it to the appropriate managed service.
