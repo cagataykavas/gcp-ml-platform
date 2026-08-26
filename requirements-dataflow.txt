@@ -1,0 +1,4 @@
+apache-beam[gcp]>=2.67
+google-cloud-bigquery>=3.25
+google-cloud-aiplatform>=1.66
+kfp>=2.9
