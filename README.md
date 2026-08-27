@@ -1,6 +1,6 @@
 # GCP ML Platform
 
-A Google Cloud reference architecture for **data ingestion, model training, registry, online scoring and monitoring**. The main public example is a synthetic banking-risk workload so the cloud services map to a realistic ML lifecycle instead of disconnected hello-world deployments.
+A Google Cloud reference architecture for **streaming data ingestion, model training, registry, managed scoring and delayed-label monitoring**. The main public example is a synthetic banking-risk workload so the cloud services map to a realistic ML lifecycle instead of disconnected hello-world deployments.
 
 > Portfolio reference implementation only. All banking data and examples are synthetic.
 
@@ -8,21 +8,36 @@ A Google Cloud reference architecture for **data ingestion, model training, regi
 
 ```mermaid
 flowchart LR
-    PUB[Pub/Sub events] --> DF[Dataflow / streaming transforms]
-    DF --> BQ[(BigQuery feature + outcome tables)]
-    GCS[(Cloud Storage datasets / artifacts)] --> VPIPE[Vertex AI Pipeline]
-    BQ --> VPIPE
+    PUB[Pub/Sub transaction events] --> DF[Dataflow\nparse · validate · window · aggregate]
+    DF --> BQ[(BigQuery features + dead letters)]
+    BQ --> VPIPE[Vertex AI Pipeline]
+    GCS[(Cloud Storage artifacts)] --> VPIPE
     VPIPE --> TRAIN[Training component]
     TRAIN --> GATE[Quality gate\nROC-AUC · AP · Brier]
     GATE --> REG[Vertex AI Model Registry]
     REG --> ENDPOINT[Vertex AI Endpoint]
     ENDPOINT --> SCORE[Online / batch scoring]
-    SCORE --> BQOUT[(BigQuery prediction table)]
-    BQOUT --> MON[Monitoring queries\nscore · calibration · decision rates]
+    SCORE --> BQOUT[(BigQuery predictions)]
+    LABELS[(Delayed outcomes)] --> MON[BigQuery monitoring\ncalibration · score · decisions]
+    BQOUT --> MON
     MON --> OPS[Cloud Monitoring / alerting]
 ```
 
 ## What is implemented
+
+### Pub/Sub → Dataflow streaming features
+
+`examples/pubsub_dataflow_risk_features.py` is a concrete Apache Beam streaming pipeline rather than a service-name placeholder. It:
+
+1. reads transaction events from a Pub/Sub subscription;
+2. parses and validates JSON payloads;
+3. sends malformed events to an explicit dead-letter output;
+4. assigns business event timestamps;
+5. computes five-minute sliding-window customer features every minute;
+6. writes aggregate risk features to BigQuery;
+7. writes invalid payloads and processing errors to a separate BigQuery table.
+
+The window produces features such as transaction count, amount sum/max, cross-border count and merchant diversity. This gives the repository a real event-time feature path that can be discussed independently of the offline training pipeline.
 
 ### Infrastructure as Code
 
@@ -69,9 +84,11 @@ The pipeline includes explicit quality gates for ROC-AUC, average precision and 
 
 The file can compile a pipeline specification and optionally submit a `PipelineJob`.
 
-### BigQuery monitoring
+### Delayed-label monitoring
 
-`examples/banking_model_monitoring.py` provides warehouse-side monitoring for scored/labeled applications:
+The repository contains two complementary warehouse-side monitoring examples.
+
+`examples/banking_model_monitoring.py` produces operational summaries for scored/labeled applications:
 
 - daily scored volume;
 - mean / standard deviation of risk score;
@@ -80,7 +97,19 @@ The file can compile a pipeline specification and optionally submit a `PipelineJ
 - Brier score when outcomes arrive;
 - calibration bins with predicted vs observed event rates.
 
+`monitoring/delayed_label_monitoring.sql` keeps the same logic directly in BigQuery SQL for an operations-oriented path where labels arrive after the decision. The separation is intentional: prediction-time observability and outcome-time model evaluation are not the same signal.
+
 The goal is not to claim that SQL replaces a complete monitoring platform. It demonstrates how delayed banking outcomes can be joined back to model decisions for operational evaluation.
+
+### Credential-free CI
+
+`.github/workflows/ci.yml` validates the public repository without requiring a live GCP project or service-account key. Every push and pull request runs:
+
+- Ruff over Python examples and pipeline definitions;
+- Python bytecode compilation for the examples and Vertex pipeline;
+- a repository check that the delayed-label monitoring SQL is present.
+
+Live deployment remains deliberately separate from repository quality checks. CI can therefore verify source quality without granting cloud credentials to pull-request code.
 
 ## Core GCP service map
 
@@ -89,7 +118,7 @@ The goal is not to claim that SQL replaces a complete monitoring platform. It de
 | Object storage | Cloud Storage | datasets and model artifacts |
 | Analytical warehouse | BigQuery | feature tables, predictions, delayed labels, monitoring |
 | Event messaging | Pub/Sub | transaction / application events |
-| Stream / batch processing | Dataflow | transformation and feature pipelines |
+| Stream / batch processing | Dataflow | transformation and event-time feature pipelines |
 | Managed ML | Vertex AI | pipelines, model registry, endpoints |
 | Container serving | Cloud Run | stateless APIs and lightweight inference services |
 | Kubernetes | GKE | workloads requiring Kubernetes-level control |
@@ -120,6 +149,8 @@ A candidate should be able to explain:
 
 - Pub/Sub vs BigQuery;
 - Dataflow's role between event transport and analytical storage;
+- processing time vs event time and why windowing uses business timestamps;
+- dead-letter handling for invalid streaming events;
 - BigQuery vs Cloud SQL;
 - Vertex AI Pipeline vs Model Registry vs Endpoint;
 - model artifact vs serving container;
