@@ -21,3 +21,17 @@ jobs:
         run: python -m compileall -q examples pipelines
       - name: Verify monitoring SQL is present
         run: test -s monitoring/delayed_label_monitoring.sql
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+      - name: Terraform format
+        run: terraform -chdir=infra fmt -check -diff
+      - name: Terraform init without backend
+        run: terraform -chdir=infra init -backend=false -input=false
+      - name: Terraform validate
+        run: terraform -chdir=infra validate
