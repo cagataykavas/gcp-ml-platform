@@ -11,7 +11,7 @@ flowchart LR
     PUB[Pub/Sub transaction events] --> DF[Dataflow\nparse · validate · window · aggregate]
     DF --> BQ[(BigQuery features + dead letters)]
     BQ --> VPIPE[Vertex AI Pipeline]
-    GCS[(Cloud Storage artifacts)] --> VPIPE
+    GCS[(Versioned Cloud Storage artifacts)] --> VPIPE
     VPIPE --> TRAIN[Training component]
     TRAIN --> GATE[Quality gate\nROC-AUC · AP · Brier]
     GATE --> REG[Vertex AI Model Registry]
@@ -21,6 +21,11 @@ flowchart LR
     LABELS[(Delayed outcomes)] --> MON[BigQuery monitoring\ncalibration · score · decisions]
     BQOUT --> MON
     MON --> OPS[Cloud Monitoring / alerting]
+
+    AR[Artifact Registry] --> RUN[Cloud Run inference API]
+    GCS --> RUN
+    RUN --> PUBOUT[Pub/Sub prediction telemetry]
+    PUBOUT --> BQOUT
 ```
 
 ## What is implemented
@@ -39,16 +44,32 @@ flowchart LR
 
 The window produces features such as transaction count, amount sum/max, cross-border count and merchant diversity. This gives the repository a real event-time feature path that can be discussed independently of the offline training pipeline.
 
-### Infrastructure as Code
+### Infrastructure as Code + runtime identity
 
-Terraform examples provision core GCP ML infrastructure such as:
+`infra/main.tf` now models a concrete serving/telemetry boundary rather than only listing service names. It includes:
 
-- Cloud Storage;
-- Artifact Registry;
-- Cloud Run;
-- Pub/Sub;
-- BigQuery;
-- service configuration suitable for a containerized ML workload.
+- explicit required Google API enablement;
+- versioned Cloud Storage model-artifact bucket with retained history;
+- Artifact Registry Docker repository;
+- Pub/Sub prediction-event topic;
+- BigQuery analytics/monitoring dataset;
+- a dedicated Cloud Run runtime service account;
+- bucket-scoped `storage.objectViewer` access;
+- topic-scoped `pubsub.publisher` access;
+- dataset-scoped `bigquery.dataEditor` access;
+- bounded Cloud Run autoscaling and runtime configuration through resource references.
+
+The runtime identity is intentionally separate from CI/deployment identity. The public example also does **not** grant unauthenticated invocation; ingress/authentication are deployment-policy decisions rather than something to silently make public in a portfolio Terraform file.
+
+The Terraform itself is checked in CI with:
+
+```text
+terraform fmt -check
+terraform init -backend=false
+terraform validate
+```
+
+No GCP credentials are required for those static/provider-schema checks.
 
 ### BigQuery → Vertex AI scoring
 
@@ -101,32 +122,43 @@ The repository contains two complementary warehouse-side monitoring examples.
 
 The goal is not to claim that SQL replaces a complete monitoring platform. It demonstrates how delayed banking outcomes can be joined back to model decisions for operational evaluation.
 
-### Credential-free CI
+## Credential-free CI
 
-`.github/workflows/ci.yml` validates the public repository without requiring a live GCP project or service-account key. Every push and pull request runs:
+`.github/workflows/ci.yml` validates the public repository without requiring a live GCP project or service-account key.
 
-- Ruff over Python examples and pipeline definitions;
-- Python bytecode compilation for the examples and Vertex pipeline;
-- a repository check that the delayed-label monitoring SQL is present.
+Every push and pull request checks two independent layers:
 
-Live deployment remains deliberately separate from repository quality checks. CI can therefore verify source quality without granting cloud credentials to pull-request code.
+**Python / ML platform source**
+
+- Ruff over Dataflow examples and Vertex pipeline definitions;
+- Python bytecode compilation;
+- presence of the delayed-label monitoring SQL.
+
+**Infrastructure**
+
+- Terraform formatting;
+- provider initialization with the backend disabled;
+- Terraform schema/configuration validation.
+
+Live deployment remains deliberately separate from repository quality checks. Pull-request code therefore does not receive cloud credentials merely to prove that the public architecture is syntactically coherent.
 
 ## Core GCP service map
 
 | Concern | Google Cloud service | Portfolio use |
 |---|---|---|
-| Object storage | Cloud Storage | datasets and model artifacts |
+| Object storage | Cloud Storage | versioned datasets and model artifacts |
 | Analytical warehouse | BigQuery | feature tables, predictions, delayed labels, monitoring |
-| Event messaging | Pub/Sub | transaction / application events |
+| Event messaging | Pub/Sub | transaction/application events and async telemetry |
 | Stream / batch processing | Dataflow | transformation and event-time feature pipelines |
 | Managed ML | Vertex AI | pipelines, model registry, endpoints |
 | Container serving | Cloud Run | stateless APIs and lightweight inference services |
 | Kubernetes | GKE | workloads requiring Kubernetes-level control |
 | OLTP database | Cloud SQL / AlloyDB | application metadata / relational state |
 | Cache | Memorystore | Redis-style low-latency state |
-| Images | Artifact Registry | container images |
-| Secrets | Secret Manager | credentials / secret configuration |
+| Images | Artifact Registry | immutable container images |
+| Secrets | Secret Manager | credentials / secret configuration when required |
 | Observability | Cloud Monitoring + Logging | platform metrics, logs and alerts |
+| Identity | IAM service accounts | workload-specific runtime/deployment boundaries |
 
 ## BigQuery vs Cloud SQL
 
@@ -143,6 +175,8 @@ This repository deliberately uses BigQuery for analytical/scoring history rather
 
 **GKE** becomes attractive when the system requires deeper Kubernetes control: custom scheduling, complex sidecars/operators, specialized networking, multi-service platform patterns or GPU scheduling requirements.
 
+The Terraform reference therefore uses Cloud Run for the lightweight inference API while the README keeps GKE as an explicit architectural alternative rather than adding Kubernetes just for keyword density.
+
 ## GCP interview path represented here
 
 A candidate should be able to explain:
@@ -155,11 +189,13 @@ A candidate should be able to explain:
 - Vertex AI Pipeline vs Model Registry vs Endpoint;
 - model artifact vs serving container;
 - batch vs online scoring;
-- IAM / service-account boundaries;
+- runtime service account vs deployment identity;
+- resource-scoped IAM vs broad project roles;
 - Cloud Run vs GKE;
-- Cloud Storage vs BigQuery;
+- Cloud Storage versioning and artifact rollback;
 - monitoring when ground-truth labels arrive with delay;
-- why a production model needs deployment gates and lineage rather than only a `.pkl` file.
+- why a production model needs deployment gates and lineage rather than only a `.pkl` file;
+- what `terraform validate` proves and, importantly, what it does **not** prove without a real deployment.
 
 ## Cross-cloud translation
 
@@ -173,5 +209,13 @@ The same logical ML workload is represented elsewhere in the portfolio so archit
 | Managed ML | Vertex AI | SageMaker | Azure ML |
 | Container runtime | Cloud Run / GKE | ECS/EKS | Container Apps/AKS |
 | Monitoring | Cloud Monitoring | CloudWatch | Azure Monitor |
+| Workload identity | IAM service accounts | IAM roles | Managed identities |
 
 The intent is **concept portability**: understand what the architecture needs, then map it to the appropriate managed service.
+
+## Related portfolio systems
+
+- `banking-risk-ml-platform` — modeling, validation, threshold economics, registry, serving and monitoring;
+- `fintech-data-platform` — contracts, lakehouse layers, dbt, Airflow, PostgreSQL and Spark;
+- `fraud-streaming-platform` — real-time fraud signal processing and analyst routing;
+- `agentic-migrator` — bounded, observable agentic code-migration control plane.
