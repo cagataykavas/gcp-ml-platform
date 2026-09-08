@@ -34,6 +34,8 @@ locals {
   required_services = toset([
     "artifactregistry.googleapis.com",
     "bigquery.googleapis.com",
+    "logging.googleapis.com",
+    "monitoring.googleapis.com",
     "pubsub.googleapis.com",
     "run.googleapis.com",
     "storage.googleapis.com",
@@ -49,10 +51,12 @@ resource "google_project_service" "required" {
 }
 
 resource "google_storage_bucket" "artifacts" {
-  name                        = "${var.project_id}-ml-artifacts"
-  location                    = var.region
+  name                     = "${var.project_id}-ml-artifacts"
+  location                 = var.region
+  public_access_prevention = "enforced"
+  force_destroy            = false
+
   uniform_bucket_level_access = true
-  force_destroy               = false
 
   versioning {
     enabled = true
