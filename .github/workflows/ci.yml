@@ -16,9 +16,11 @@ jobs:
       - name: Install Ruff
         run: pip install ruff
       - name: Ruff
-        run: ruff check examples pipelines
+        run: ruff check examples pipelines tools tests
       - name: Compile Python examples
-        run: python -m compileall -q examples pipelines
+        run: python -m compileall -q examples pipelines tools tests
+      - name: Terraform plan policy tests
+        run: python -m unittest discover -s tests -v
       - name: Verify monitoring SQL is present
         run: test -s monitoring/delayed_label_monitoring.sql
 
