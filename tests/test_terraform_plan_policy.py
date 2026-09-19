@@ -170,9 +170,9 @@ class TerraformPlanPolicyTest(unittest.TestCase):
         self.assertEqual(report.findings[0].rule, "no_public_iam")
 
     def test_malformed_plan_is_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "resource_changes"):
+        with self.assertRaisesRegex(TypeError, "resource_changes"):
             evaluate_plan({})
-        with self.assertRaisesRegex(ValueError, "address and type"):
+        with self.assertRaisesRegex(TypeError, "address and type"):
             evaluate_plan({"resource_changes": [{"change": {"actions": ["create"]}}]})
 
 
