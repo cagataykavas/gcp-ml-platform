@@ -122,6 +122,36 @@ The repository contains two complementary warehouse-side monitoring examples.
 
 The goal is not to claim that SQL replaces a complete monitoring platform. It demonstrates how delayed banking outcomes can be joined back to model decisions for operational evaluation.
 
+## Terraform plan safety gate
+
+`tools/terraform_plan_policy.py` evaluates the machine-readable output of
+`terraform show -json` before apply:
+
+```bash
+terraform -chdir=infra plan -out=tfplan \
+  -var='project_id=my-project' \
+  -var='container_image=europe-west1-docker.pkg.dev/my-project/ml/inference@sha256:...'
+terraform -chdir=infra show -json tfplan > plan.json
+python tools/terraform_plan_policy.py plan.json --output plan-policy-report.json
+```
+
+The dependency-free gate rejects:
+
+- deletion and replacement action sequences;
+- IAM grants to `allUsers` or `allAuthenticatedUsers`;
+- artifact buckets without enforced public-access prevention and uniform access;
+- `force_destroy` on artifact buckets and destructive BigQuery dataset settings;
+- required APIs configured to disable on destroy;
+- Cloud Run images that are not pinned by SHA-256 digest.
+
+All findings are returned in one deterministic JSON report and a policy failure exits non-zero. The
+unit suite exercises passing, destructive, public-IAM, storage, dataset, API and mutable-image
+plans without cloud credentials.
+
+This gate evaluates the submitted plan; it does not replace organization policies, IAM analysis or
+a human review of intended changes. Production CI should generate the plan in a protected
+environment, preserve it as an artifact, verify its provenance and require approval before apply.
+
 ## Credential-free CI
 
 `.github/workflows/ci.yml` validates the public repository without requiring a live GCP project or service-account key.
