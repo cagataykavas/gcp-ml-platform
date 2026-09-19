@@ -8,7 +8,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-
 PUBLIC_MEMBERS = {"allUsers", "allAuthenticatedUsers"}
 
 
@@ -67,20 +66,20 @@ def evaluate_plan(plan: dict[str, Any]) -> PlanReport:
 
     changes = plan.get("resource_changes")
     if not isinstance(changes, list):
-        raise ValueError("plan must contain a resource_changes list")
+        raise TypeError("plan must contain a resource_changes list")
 
     findings: list[Finding] = []
     checked = 0
     for resource in changes:
         if not isinstance(resource, dict):
-            raise ValueError("resource_changes entries must be objects")
+            raise TypeError("resource_changes entries must be objects")
         address = resource.get("address")
         resource_type = resource.get("type")
         change = resource.get("change")
         if not isinstance(address, str) or not isinstance(resource_type, str):
-            raise ValueError("each resource change requires string address and type")
+            raise TypeError("each resource change requires string address and type")
         if not isinstance(change, dict) or not isinstance(change.get("actions"), list):
-            raise ValueError(f"{address} requires a change.actions list")
+            raise TypeError(f"{address} requires a change.actions list")
 
         actions = change["actions"]
         if any(not isinstance(action, str) for action in actions):
@@ -102,7 +101,7 @@ def evaluate_plan(plan: dict[str, Any]) -> PlanReport:
         if after is None:
             continue
         if not isinstance(after, dict):
-            raise ValueError(f"{address} change.after must be an object or null")
+            raise TypeError(f"{address} change.after must be an object or null")
 
         if "_iam_" in resource_type:
             public = sorted(_public_members(after))
@@ -188,9 +187,9 @@ def main() -> int:
     try:
         payload = json.loads(args.plan.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
-            raise ValueError("plan root must be an object")
+            raise TypeError("plan root must be an object")
         report = evaluate_plan(payload)
-    except (OSError, json.JSONDecodeError, ValueError) as error:
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
         parser.exit(2, f"invalid Terraform plan: {error}\n")
 
     rendered = json.dumps(report.as_dict(), indent=2, sort_keys=True)
