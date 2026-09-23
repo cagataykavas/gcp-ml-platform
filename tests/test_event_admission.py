@@ -78,7 +78,9 @@ class EventAdmissionTests(unittest.TestCase):
         self.assert_rejected(payload(country="TUR"), "invalid_country")
 
     def test_timezone_naive_event_time_is_rejected(self) -> None:
-        self.assert_rejected(payload(event_time="2026-09-23T07:59:00"), "timezone_required")
+        self.assert_rejected(
+            payload(event_time="2026-09-23T07:59:00"), "timezone_required"
+        )
 
     def test_event_beyond_lateness_budget_is_rejected(self) -> None:
         policy = EventTimePolicy(max_lateness_seconds=60)
@@ -103,7 +105,9 @@ class EventAdmissionTests(unittest.TestCase):
         message = b"not-json-and-long"
         error = AdmissionError("invalid_json", "payload is not valid JSON")
 
-        record = build_dead_letter(message, error, observed_at=OBSERVED_AT, max_excerpt_bytes=8)
+        record = build_dead_letter(
+            message, error, observed_at=OBSERVED_AT, max_excerpt_bytes=8
+        )
 
         self.assertEqual(record.payload, "not-json")
         self.assertEqual(

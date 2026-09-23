@@ -155,12 +155,16 @@ def normalize_transaction(
         raise AdmissionError("invalid_country", "country must be a two-letter string")
     country = country_value.strip().upper()
     if len(country) != 2 or not country.isascii() or not country.isalpha():
-        raise AdmissionError("invalid_country", "country must be a two-letter ASCII code")
+        raise AdmissionError(
+            "invalid_country", "country must be a two-letter ASCII code"
+        )
 
     try:
         event_time = datetime.fromisoformat(str(payload["event_time"]))
     except ValueError as exc:
-        raise AdmissionError("invalid_event_time", "event_time must be ISO-8601") from exc
+        raise AdmissionError(
+            "invalid_event_time", "event_time must be ISO-8601"
+        ) from exc
     event_time = _utc(event_time, field="event_time")
 
     if event_time > observed_at + timedelta(seconds=policy.max_future_skew_seconds):

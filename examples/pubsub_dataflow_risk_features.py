@@ -10,6 +10,7 @@ from apache_beam.options.pipeline_options import (
     StandardOptions,
 )
 from apache_beam.transforms.window import SlidingWindows
+
 from gcpml.event_admission import (
     AdmissionError,
     EventTimePolicy,
@@ -49,7 +50,9 @@ class ParseTransaction(beam.DoFn):
             )
             # Beam event timestamps drive windowing. The original Pub/Sub timestamp is
             # intentionally not substituted for the business event time.
-            yield beam.window.TimestampedValue(normalized, normalized["event_timestamp"])
+            yield beam.window.TimestampedValue(
+                normalized, normalized["event_timestamp"]
+            )
         except AdmissionError as exc:
             yield beam.pvalue.TaggedOutput(
                 self.INVALID,
@@ -70,7 +73,9 @@ class CustomerWindowFeatures(beam.CombineFn):
     def add_input(self, accumulator, element):
         accumulator["count"] += 1
         accumulator["amount_sum"] += float(element["amount"])
-        accumulator["amount_max"] = max(accumulator["amount_max"], float(element["amount"]))
+        accumulator["amount_max"] = max(
+            accumulator["amount_max"], float(element["amount"])
+        )
         accumulator["cross_border_count"] += int(element["is_cross_border"])
         accumulator["merchants"].add(str(element["merchant_id"]))
         return accumulator
@@ -125,7 +130,8 @@ def build_pipeline(pipeline: beam.Pipeline, config: Config) -> None:
     _ = (
         parsed.valid
         | "Key by customer" >> beam.Map(lambda row: (row["customer_id"], row))
-        | "Five minute sliding window" >> beam.WindowInto(SlidingWindows(size=300, period=60))
+        | "Five minute sliding window"
+        >> beam.WindowInto(SlidingWindows(size=300, period=60))
         | "Aggregate customer features" >> beam.CombinePerKey(CustomerWindowFeatures())
         | "Attach window boundaries" >> beam.ParDo(AttachWindow())
         | "Write feature rows"
@@ -169,7 +175,9 @@ def run(config: Config, extra_args: list[str] | None = None) -> None:
 
 
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
-    parser = argparse.ArgumentParser(description="Pub/Sub -> Dataflow risk feature stream")
+    parser = argparse.ArgumentParser(
+        description="Pub/Sub -> Dataflow risk feature stream"
+    )
     parser.add_argument("--project", required=True)
     parser.add_argument("--subscription", required=True)
     parser.add_argument("--output-table", required=True)
