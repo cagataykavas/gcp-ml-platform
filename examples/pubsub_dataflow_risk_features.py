@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 import apache_beam as beam
 from apache_beam.options.pipeline_options import (
@@ -12,6 +10,13 @@ from apache_beam.options.pipeline_options import (
     StandardOptions,
 )
 from apache_beam.transforms.window import SlidingWindows
+
+from gcpml.event_admission import (
+    AdmissionError,
+    EventTimePolicy,
+    build_dead_letter,
+    normalize_transaction,
+)
 
 
 @dataclass(frozen=True)
@@ -22,6 +27,9 @@ class Config:
     dead_letter_table: str
     region: str = "europe-west1"
     runner: str = "DataflowRunner"
+    max_payload_bytes: int = 256 * 1024
+    max_lateness_seconds: int = 6 * 60 * 60
+    max_future_skew_seconds: int = 2 * 60
 
 
 class ParseTransaction(beam.DoFn):
@@ -29,50 +37,26 @@ class ParseTransaction(beam.DoFn):
 
     INVALID = "invalid"
 
+    def __init__(self, policy: EventTimePolicy) -> None:
+        self.policy = policy
+
     def process(self, message: bytes, timestamp=beam.DoFn.TimestampParam):
+        observed_at = timestamp.to_utc_datetime(has_tz=True)
         try:
-            payload = json.loads(message.decode("utf-8"))
-            required = {
-                "transaction_id",
-                "customer_id",
-                "event_time",
-                "amount",
-                "country",
-                "merchant_id",
-            }
-            missing = sorted(required - payload.keys())
-            if missing:
-                raise ValueError(f"missing fields: {missing}")
-
-            amount = float(payload["amount"])
-            if amount < 0:
-                raise ValueError("amount must be non-negative")
-
-            event_time = datetime.fromisoformat(str(payload["event_time"]).replace("Z", "+00:00"))
-            if event_time.tzinfo is None:
-                event_time = event_time.replace(tzinfo=timezone.utc)
-
-            normalized = {
-                "transaction_id": str(payload["transaction_id"]),
-                "customer_id": str(payload["customer_id"]),
-                "merchant_id": str(payload["merchant_id"]),
-                "event_time": event_time.isoformat(),
-                "amount": amount,
-                "country": str(payload["country"]),
-                "is_cross_border": int(str(payload["country"]) != "TR"),
-                "event_timestamp": event_time.timestamp(),
-            }
+            normalized = normalize_transaction(
+                message,
+                observed_at=observed_at,
+                policy=self.policy,
+            )
             # Beam event timestamps drive windowing. The original Pub/Sub timestamp is
             # intentionally not substituted for the business event time.
-            yield beam.window.TimestampedValue(normalized, event_time.timestamp())
-        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            yield beam.window.TimestampedValue(
+                normalized, normalized["event_timestamp"]
+            )
+        except AdmissionError as exc:
             yield beam.pvalue.TaggedOutput(
                 self.INVALID,
-                {
-                    "payload": message.decode("utf-8", errors="replace"),
-                    "error": str(exc),
-                    "processing_timestamp": timestamp.to_utc_datetime().isoformat(),
-                },
+                build_dead_letter(message, exc, observed_at=observed_at).to_dict(),
             )
 
 
@@ -89,7 +73,9 @@ class CustomerWindowFeatures(beam.CombineFn):
     def add_input(self, accumulator, element):
         accumulator["count"] += 1
         accumulator["amount_sum"] += float(element["amount"])
-        accumulator["amount_max"] = max(accumulator["amount_max"], float(element["amount"]))
+        accumulator["amount_max"] = max(
+            accumulator["amount_max"], float(element["amount"])
+        )
         accumulator["cross_border_count"] += int(element["is_cross_border"])
         accumulator["merchants"].add(str(element["merchant_id"]))
         return accumulator
@@ -126,10 +112,16 @@ class AttachWindow(beam.DoFn):
 
 
 def build_pipeline(pipeline: beam.Pipeline, config: Config) -> None:
+    admission_policy = EventTimePolicy(
+        max_payload_bytes=config.max_payload_bytes,
+        max_lateness_seconds=config.max_lateness_seconds,
+        max_future_skew_seconds=config.max_future_skew_seconds,
+    )
     parsed = (
         pipeline
         | "Read PubSub" >> beam.io.ReadFromPubSub(subscription=config.subscription)
-        | "Parse transaction" >> beam.ParDo(ParseTransaction()).with_outputs(
+        | "Parse transaction"
+        >> beam.ParDo(ParseTransaction(admission_policy)).with_outputs(
             ParseTransaction.INVALID,
             main="valid",
         )
@@ -138,10 +130,12 @@ def build_pipeline(pipeline: beam.Pipeline, config: Config) -> None:
     _ = (
         parsed.valid
         | "Key by customer" >> beam.Map(lambda row: (row["customer_id"], row))
-        | "Five minute sliding window" >> beam.WindowInto(SlidingWindows(size=300, period=60))
+        | "Five minute sliding window"
+        >> beam.WindowInto(SlidingWindows(size=300, period=60))
         | "Aggregate customer features" >> beam.CombinePerKey(CustomerWindowFeatures())
         | "Attach window boundaries" >> beam.ParDo(AttachWindow())
-        | "Write feature rows" >> beam.io.WriteToBigQuery(
+        | "Write feature rows"
+        >> beam.io.WriteToBigQuery(
             config.output_table,
             schema=(
                 "customer_id:STRING,window_start:TIMESTAMP,window_end:TIMESTAMP,"
@@ -153,14 +147,14 @@ def build_pipeline(pipeline: beam.Pipeline, config: Config) -> None:
         )
     )
 
-    _ = (
-        parsed.invalid
-        | "Write invalid rows" >> beam.io.WriteToBigQuery(
-            config.dead_letter_table,
-            schema="payload:STRING,error:STRING,processing_timestamp:TIMESTAMP",
-            write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
-            create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED,
-        )
+    _ = parsed.invalid | "Write invalid rows" >> beam.io.WriteToBigQuery(
+        config.dead_letter_table,
+        schema=(
+            "payload:STRING,payload_sha256:STRING,payload_truncated:BOOLEAN,"
+            "reason_code:STRING,retryable:BOOLEAN,error:STRING,observed_at:TIMESTAMP"
+        ),
+        write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
+        create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED,
     )
 
 
@@ -181,13 +175,18 @@ def run(config: Config, extra_args: list[str] | None = None) -> None:
 
 
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
-    parser = argparse.ArgumentParser(description="Pub/Sub -> Dataflow risk feature stream")
+    parser = argparse.ArgumentParser(
+        description="Pub/Sub -> Dataflow risk feature stream"
+    )
     parser.add_argument("--project", required=True)
     parser.add_argument("--subscription", required=True)
     parser.add_argument("--output-table", required=True)
     parser.add_argument("--dead-letter-table", required=True)
     parser.add_argument("--region", default="europe-west1")
     parser.add_argument("--runner", default="DataflowRunner")
+    parser.add_argument("--max-payload-bytes", type=int, default=256 * 1024)
+    parser.add_argument("--max-lateness-seconds", type=int, default=6 * 60 * 60)
+    parser.add_argument("--max-future-skew-seconds", type=int, default=2 * 60)
     return parser.parse_known_args()
 
 
@@ -201,6 +200,9 @@ def main() -> None:
             dead_letter_table=args.dead_letter_table,
             region=args.region,
             runner=args.runner,
+            max_payload_bytes=args.max_payload_bytes,
+            max_lateness_seconds=args.max_lateness_seconds,
+            max_future_skew_seconds=args.max_future_skew_seconds,
         ),
         extra_args=beam_args,
     )
