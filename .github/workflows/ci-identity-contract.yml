@@ -1,0 +1,29 @@
+name: ci-identity-contract
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-identity-contract-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  terraform-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+      - name: Initialize provider schema without a backend
+        run: terraform -chdir=infra init -backend=false -input=false
+      - name: Verify keyless deployment identity contract
+        run: terraform -chdir=infra test -filter=tests/ci_identity.tftest.hcl
+      - name: Verify staged-release workflow contract
+        run: python -m unittest -q tests/test_stage_release_contract.py
