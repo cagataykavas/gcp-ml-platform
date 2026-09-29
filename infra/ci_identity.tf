@@ -87,7 +87,7 @@ resource "google_iam_workload_identity_pool" "github" {
 
 resource "google_iam_workload_identity_pool_provider" "github" {
   workload_identity_pool_id          = google_iam_workload_identity_pool.github.workload_identity_pool_id
-  workload_identity_pool_provider_id = "gcp-ml-platform"
+  workload_identity_pool_provider_id = "ml-platform"
   display_name                       = "gcp-ml-platform release"
   description                        = "Repository, workflow, branch, event and environment-scoped GitHub OIDC"
 

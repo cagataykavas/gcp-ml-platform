@@ -10,6 +10,13 @@ run "keyless_cloud_run_release_contract" {
   command = apply
 
   assert {
+    condition = (
+      google_iam_workload_identity_pool_provider.github.workload_identity_pool_provider_id == "ml-platform"
+    )
+    error_message = "The provider ID must remain valid and must not use Google's reserved gcp- prefix."
+  }
+
+  assert {
     condition = google_iam_workload_identity_pool_provider.github.oidc[0].issuer_uri == (
       "https://token.actions.githubusercontent.com/"
     )
