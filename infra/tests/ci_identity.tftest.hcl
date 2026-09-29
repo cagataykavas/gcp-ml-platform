@@ -1,5 +1,21 @@
 mock_provider "google" {}
 
+override_resource {
+  target = google_service_account.github_deployer
+  values = {
+    email = "github-cloud-run-deployer@portfolio-test-123.iam.gserviceaccount.com"
+    name  = "projects/portfolio-test-123/serviceAccounts/github-cloud-run-deployer@portfolio-test-123.iam.gserviceaccount.com"
+  }
+}
+
+override_resource {
+  target = google_service_account.runtime
+  values = {
+    email = "ml-inference-runtime@portfolio-test-123.iam.gserviceaccount.com"
+    name  = "projects/portfolio-test-123/serviceAccounts/ml-inference-runtime@portfolio-test-123.iam.gserviceaccount.com"
+  }
+}
+
 variables {
   project_id      = "portfolio-test-123"
   region          = "europe-west1"
