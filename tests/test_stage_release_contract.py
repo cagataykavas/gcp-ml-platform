@@ -34,7 +34,14 @@ ACTION_REFERENCE = re.compile(
 class WorkflowSupplyChainTests(unittest.TestCase):
     def test_every_remote_action_uses_an_approved_commit(self) -> None:
         references: list[tuple[str, str, str, str | None]] = []
-        for workflow in sorted(WORKFLOW_DIRECTORY.glob("*.yml")):
+        workflows = sorted(
+            [
+                *WORKFLOW_DIRECTORY.glob("*.yml"),
+                *WORKFLOW_DIRECTORY.glob("*.yaml"),
+            ]
+        )
+        self.assertEqual(len(workflows), 3)
+        for workflow in workflows:
             for line_number, line in enumerate(
                 workflow.read_text(encoding="utf-8").splitlines(), start=1
             ):
