@@ -79,8 +79,11 @@ or release gates admit the candidate.
 
 - GitHub Actions, the selected official actions, GitHub's OIDC issuer, Google STS, IAM
   Credentials, and the initial Terraform administrator remain trust dependencies.
-- Major action tags are readable but mutable upstream references. A stricter deployment
-  should pin reviewed action commit SHAs and use dependency update automation.
+- Every external GitHub Action is pinned to a reviewed 40-character commit SHA. The
+  adjacent release comment keeps the human-readable version visible. Updating an action
+  requires resolving the intended release tag, reviewing its diff and changing both the
+  approved SHA allowlist in `tests/test_stage_release_contract.py` and the workflow. CI
+  rejects mutable tags, unapproved actions, truncated hashes and version-comment drift.
 - `roles/run.developer` is project-scoped because it must create a revision for a service;
   use a custom role if the project contains unrelated Cloud Run workloads.
 - The workflow assumes the image was already scanned, signed, and published. Digest
