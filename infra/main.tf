@@ -137,6 +137,12 @@ resource "google_cloud_run_v2_service" "inference" {
   location            = var.region
   deletion_protection = false
 
+  # Image revisions are owned by the governed release workflow after bootstrap.
+  # Prevent a later infrastructure apply from silently rolling back a staged digest.
+  lifecycle {
+    ignore_changes = [template[0].containers[0].image]
+  }
+
   template {
     service_account = google_service_account.runtime.email
 

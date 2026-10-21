@@ -1,0 +1,112 @@
+name: stage-cloud-run
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_digest:
+        description: Immutable sha256 digest already published as ml-inference/inference
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cloud-run-production-stage
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_DEPLOYER_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+      IMAGE_DIGEST: ${{ inputs.image_digest }}
+      SERVICE_NAME: ml-inference
+      IMAGE_REPOSITORY: ml-inference
+      IMAGE_NAME: inference
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Validate immutable release intent
+        shell: bash
+        run: |
+          set -euo pipefail
+          for required in GCP_PROJECT_ID GCP_REGION GCP_WORKLOAD_IDENTITY_PROVIDER GCP_DEPLOYER_SERVICE_ACCOUNT; do
+            if [[ -z "${!required}" ]]; then
+              echo "Missing required repository variable: ${required}" >&2
+              exit 2
+            fi
+          done
+          if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "image_digest must be an exact lowercase sha256 digest" >&2
+            exit 2
+          fi
+          printf 'image_uri=%s\n' "${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${IMAGE_REPOSITORY}/${IMAGE_NAME}@${IMAGE_DIGEST}" >> "$GITHUB_ENV"
+
+      - id: auth
+        name: Exchange GitHub OIDC token for short-lived Google credentials
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - id: stage
+        name: Stage digest-pinned revision without production traffic
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision_suffix="run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          expected_revision="${SERVICE_NAME}-${revision_suffix}"
+          if [[ ! "$expected_revision" =~ ^[a-z][a-z0-9-]{0,62}$ ]]; then
+            echo "Derived revision name is not a valid Cloud Run resource name" >&2
+            exit 2
+          fi
+          created_revision="$(gcloud run services update "$SERVICE_NAME" \
+            --project="$GCP_PROJECT_ID" \
+            --region="$GCP_REGION" \
+            --image="$image_uri" \
+            --no-traffic \
+            --revision-suffix="$revision_suffix" \
+            --update-labels="release_run=${GITHUB_RUN_ID},release_sha=${GITHUB_SHA:0:12}" \
+            --format='value(status.latestCreatedRevisionName)' \
+            --quiet)"
+          if [[ "$created_revision" != "$expected_revision" ]]; then
+            echo "Cloud Run created an unexpected revision" >&2
+            exit 3
+          fi
+          printf 'revision=%s\n' "$created_revision" >> "$GITHUB_OUTPUT"
+
+      - name: Verify staged revision readiness and immutable image
+        shell: bash
+        env:
+          STAGED_REVISION: ${{ steps.stage.outputs.revision }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$(mktemp -d)"
+          trap 'rm -rf "$evidence_dir"' EXIT
+          gcloud run revisions describe "$STAGED_REVISION" \
+            --project="$GCP_PROJECT_ID" \
+            --region="$GCP_REGION" \
+            --format=json > "$evidence_dir/revision.json"
+          gcloud run services describe "$SERVICE_NAME" \
+            --project="$GCP_PROJECT_ID" \
+            --region="$GCP_REGION" \
+            --format=json > "$evidence_dir/service.json"
+          python scripts/verify_staged_revision.py \
+            --revision "$evidence_dir/revision.json" \
+            --service "$evidence_dir/service.json" \
+            --expected-revision "$STAGED_REVISION" \
+            --expected-image "$image_uri" > "$evidence_dir/verification.json"
+          verification_id="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["verification_id"])' "$evidence_dir/verification.json")"
+          printf '### Staged Cloud Run revision\n\n- Revision: `%s`\n- Image: `%s`\n- Traffic: `0%%`\n- Verification: `%s`\n' \
+            "$STAGED_REVISION" "$image_uri" "$verification_id" >> "$GITHUB_STEP_SUMMARY"
