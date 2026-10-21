@@ -1,10 +1,44 @@
+import json
 import re
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
+
+from scripts.verify_staged_revision import (
+    MAX_EVIDENCE_BYTES,
+    VerificationError,
+    load_evidence,
+    verify_staged_revision,
+)
 
 WORKFLOW = Path(__file__).parents[1] / ".github/workflows/stage-cloud-run.yml"
 WORKFLOW_DIRECTORY = Path(__file__).parents[1] / ".github/workflows"
 TERRAFORM = Path(__file__).parents[1] / "infra/main.tf"
+EXPECTED_REVISION = "ml-inference-run-39550883056-1"
+EXPECTED_IMAGE = (
+    "europe-west1-docker.pkg.dev/model-prod/ml-inference/inference@sha256:" + "a" * 64
+)
+
+
+def revision_evidence() -> dict:
+    return {
+        "metadata": {"name": EXPECTED_REVISION},
+        "spec": {"containers": [{"image": EXPECTED_IMAGE}]},
+        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+    }
+
+
+def service_evidence() -> dict:
+    return {
+        "status": {
+            "latestCreatedRevisionName": EXPECTED_REVISION,
+            "latestReadyRevisionName": EXPECTED_REVISION,
+            "traffic": [{"revisionName": "ml-inference-production", "percent": 100}],
+        }
+    }
+
 
 APPROVED_ACTIONS = {
     "actions/checkout": {
@@ -110,9 +144,11 @@ class StageReleaseContractTests(unittest.TestCase):
 
     def test_stages_without_traffic_and_checks_the_created_revision(self) -> None:
         self.assertIn("--no-traffic", self.workflow)
-        self.assertIn("status.latestCreatedRevisionName", self.workflow)
-        self.assertIn("status.conditions[?type=Ready].status", self.workflow)
-        self.assertIn('"$deployed_image" != "$image_uri"', self.workflow)
+        self.assertIn('--revision-suffix="$revision_suffix"', self.workflow)
+        self.assertIn('created_revision" != "$expected_revision"', self.workflow)
+        self.assertIn("scripts/verify_staged_revision.py", self.workflow)
+        self.assertIn('--expected-revision "$STAGED_REVISION"', self.workflow)
+        self.assertIn('json.load(open(sys.argv[1]))["verification_id"]', self.workflow)
 
     def test_prevents_overlapping_release_attempts(self) -> None:
         self.assertIn("group: cloud-run-production-stage", self.workflow)
@@ -121,6 +157,165 @@ class StageReleaseContractTests(unittest.TestCase):
     def test_terraform_does_not_revert_workflow_owned_image_revisions(self) -> None:
         terraform = TERRAFORM.read_text(encoding="utf-8")
         self.assertIn("ignore_changes = [template[0].containers[0].image]", terraform)
+
+
+class StagedRevisionVerificationTests(unittest.TestCase):
+    def test_accepts_exact_ready_digest_with_no_candidate_traffic(self) -> None:
+        report = verify_staged_revision(
+            revision_evidence(),
+            service_evidence(),
+            expected_revision=EXPECTED_REVISION,
+            expected_image=EXPECTED_IMAGE,
+        )
+
+        self.assertTrue(report["accepted"])
+        self.assertEqual(report["traffic_percent"], 0)
+        self.assertRegex(report["verification_id"], r"^[0-9a-f]{64}$")
+
+    def test_verification_is_deterministic(self) -> None:
+        first = verify_staged_revision(
+            revision_evidence(),
+            service_evidence(),
+            expected_revision=EXPECTED_REVISION,
+            expected_image=EXPECTED_IMAGE,
+        )
+        second = verify_staged_revision(
+            revision_evidence(),
+            service_evidence(),
+            expected_revision=EXPECTED_REVISION,
+            expected_image=EXPECTED_IMAGE,
+        )
+
+        self.assertEqual(first, second)
+
+    def test_rejects_revision_identity_image_and_readiness_drift(self) -> None:
+        cases = []
+        wrong_name = revision_evidence()
+        wrong_name["metadata"]["name"] = "ml-inference-other"
+        cases.append(wrong_name)
+        wrong_image = revision_evidence()
+        wrong_image["spec"]["containers"][0]["image"] = EXPECTED_IMAGE[:-1] + "b"
+        cases.append(wrong_image)
+        unready = revision_evidence()
+        unready["status"]["conditions"][0]["status"] = "False"
+        cases.append(unready)
+
+        for evidence in cases:
+            with self.subTest(evidence=evidence), self.assertRaises(VerificationError):
+                verify_staged_revision(
+                    evidence,
+                    service_evidence(),
+                    expected_revision=EXPECTED_REVISION,
+                    expected_image=EXPECTED_IMAGE,
+                )
+
+    def test_rejects_created_or_ready_revision_races(self) -> None:
+        for field in ("latestCreatedRevisionName", "latestReadyRevisionName"):
+            service = service_evidence()
+            service["status"][field] = "ml-inference-other"
+            with self.subTest(field=field), self.assertRaises(VerificationError):
+                verify_staged_revision(
+                    revision_evidence(),
+                    service,
+                    expected_revision=EXPECTED_REVISION,
+                    expected_image=EXPECTED_IMAGE,
+                )
+
+    def test_rejects_revision_and_latest_traffic_targets(self) -> None:
+        traffic_cases = [
+            [{"revisionName": EXPECTED_REVISION, "percent": 1}],
+            [{"revisionName": EXPECTED_REVISION, "tag": "candidate", "percent": 0}],
+            [{"latestRevision": True, "percent": 100}],
+        ]
+        for traffic in traffic_cases:
+            service = service_evidence()
+            service["status"]["traffic"] = traffic
+            with self.subTest(traffic=traffic), self.assertRaises(VerificationError):
+                verify_staged_revision(
+                    revision_evidence(),
+                    service,
+                    expected_revision=EXPECTED_REVISION,
+                    expected_image=EXPECTED_IMAGE,
+                )
+
+    def test_rejects_invalid_release_intent(self) -> None:
+        cases = [
+            ("UPPERCASE", EXPECTED_IMAGE),
+            (EXPECTED_REVISION, EXPECTED_IMAGE.replace("@sha256:", ":latest-")),
+        ]
+        for revision, image in cases:
+            with (
+                self.subTest(revision=revision, image=image),
+                self.assertRaises(VerificationError),
+            ):
+                verify_staged_revision(
+                    revision_evidence(),
+                    service_evidence(),
+                    expected_revision=revision,
+                    expected_image=image,
+                )
+
+    def test_loader_rejects_duplicate_nonfinite_and_oversized_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cases = {
+                "duplicate.json": '{"status":{},"status":{}}',
+                "nonfinite.json": '{"value":NaN}',
+                "oversized.json": "x" * (MAX_EVIDENCE_BYTES + 1),
+            }
+            for name, content in cases.items():
+                path = root / name
+                path.write_text(content, encoding="utf-8")
+                with self.subTest(name=name), self.assertRaises(VerificationError):
+                    load_evidence(path)
+
+    def test_loader_rejects_symbolic_links(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target.json"
+            target.write_text("{}", encoding="utf-8")
+            link = root / "evidence.json"
+            link.symlink_to(target)
+
+            with self.assertRaises(VerificationError):
+                load_evidence(link)
+
+    def test_cli_has_distinct_accept_and_reject_exit_codes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            revision_path = root / "revision.json"
+            service_path = root / "service.json"
+            revision_path.write_text(json.dumps(revision_evidence()), encoding="utf-8")
+            service_path.write_text(json.dumps(service_evidence()), encoding="utf-8")
+            command = [
+                sys.executable,
+                "scripts/verify_staged_revision.py",
+                "--revision",
+                str(revision_path),
+                "--service",
+                str(service_path),
+                "--expected-revision",
+                EXPECTED_REVISION,
+                "--expected-image",
+                EXPECTED_IMAGE,
+            ]
+
+            accepted = subprocess.run(
+                command, capture_output=True, text=True, check=False
+            )
+            rejected_service = service_evidence()
+            rejected_service["status"]["traffic"] = [
+                {"revisionName": EXPECTED_REVISION, "percent": 1}
+            ]
+            service_path.write_text(json.dumps(rejected_service), encoding="utf-8")
+            rejected = subprocess.run(
+                command, capture_output=True, text=True, check=False
+            )
+
+            self.assertEqual(accepted.returncode, 0)
+            self.assertTrue(json.loads(accepted.stdout)["accepted"])
+            self.assertEqual(rejected.returncode, 3)
+            self.assertFalse(json.loads(rejected.stderr)["accepted"])
 
 
 if __name__ == "__main__":

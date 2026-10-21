@@ -63,7 +63,15 @@ The workflow constructs the complete Artifact Registry URI for
 `ml-inference/inference`, rejects tags and malformed digests, exchanges its GitHub OIDC
 token, and creates a Cloud Run revision with `--no-traffic`. It then verifies both
 revision readiness and the exact deployed image reference before writing a bounded job
-summary.
+summary. The revision name includes the immutable GitHub run ID and attempt number. The
+workflow verifies that exact revision rather than re-reading an ambiguous "latest"
+revision, and fails if another update wins the created/ready revision race.
+
+The verification step also inspects the complete Cloud Run traffic status. It rejects a
+positive allocation, a tagged route, or a `latestRevision` target that could make the
+candidate reachable through the production service. Cloud output is parsed as bounded
+JSON with duplicate-field and non-finite-value rejection, and the accepted evidence is
+bound to a deterministic SHA-256 verification ID recorded in the job summary.
 
 Terraform owns the service configuration but delegates the container image field to the
 release workflow after the initial bootstrap. Its targeted `ignore_changes` rule prevents
@@ -90,6 +98,9 @@ or release gates admit the candidate.
   pinning proves byte identity, not provenance or vulnerability status.
 - `--no-traffic` avoids automatic production exposure, but a tagged or authenticated
   revision can still be invoked by principals that already possess invocation access.
+- The workflow serializes its own staging jobs and detects a conflicting Cloud Run
+  update during verification, but it cannot prevent an external principal from updating
+  the service after verification. Promotion must re-check the revision identity.
 
 The next increment is a signed provenance and vulnerability admission step followed by
 an authenticated candidate smoke test and a separately authorized traffic-promotion
