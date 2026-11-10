@@ -83,6 +83,20 @@ No GCP credentials are required for those static/provider-schema checks.
 
 This makes the repo useful for discussing the boundary between **warehouse analytics and production model serving**.
 
+The batch scorer now routes feature rows and provider responses through a pure-Python
+admission contract before inference results are published. It rejects duplicate or
+over-budget batches, missing/non-finite features, Vertex response cardinality drift,
+and invalid probabilities. Every BigQuery streaming write uses a deterministic
+
+```text
+SHA-256(run ID + model revision + application ID)
+```
+
+as its retry row ID. Retrying the same governed run therefore presents the same
+BigQuery `insertId` without placing the run or model identity in the scored row.
+BigQuery streaming deduplication is still best-effort; exact-once requirements need
+the Storage Write API or an authoritative downstream uniqueness constraint.
+
 ### Vertex AI Pipeline
 
 `pipelines/banking_vertex_pipeline.py` defines a KFP/Vertex-oriented lifecycle:
