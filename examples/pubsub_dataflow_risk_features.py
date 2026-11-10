@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import apache_beam as beam
 from apache_beam.options.pipeline_options import (
@@ -48,9 +48,9 @@ class ParseTransaction(beam.DoFn):
             if amount < 0:
                 raise ValueError("amount must be non-negative")
 
-            event_time = datetime.fromisoformat(str(payload["event_time"]).replace("Z", "+00:00"))
+            event_time = datetime.fromisoformat(str(payload["event_time"]))
             if event_time.tzinfo is None:
-                event_time = event_time.replace(tzinfo=timezone.utc)
+                event_time = event_time.replace(tzinfo=UTC)
 
             normalized = {
                 "transaction_id": str(payload["transaction_id"]),
