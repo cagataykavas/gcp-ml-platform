@@ -1,0 +1,32 @@
+name: monitoring-contract
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/**"
+      - ".github/workflows/monitoring-contract.yml"
+  pull_request:
+    paths:
+      - "infra/**"
+      - ".github/workflows/monitoring-contract.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  terraform-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+      - name: Initialize provider schema without a backend
+        run: terraform -chdir=infra init -backend=false -input=false
+      - name: Check Terraform formatting
+        run: terraform -chdir=infra fmt -check -diff -recursive
+      - name: Validate Terraform configuration
+        run: terraform -chdir=infra validate
+      - name: Test monitoring policy with a mocked provider
+        run: terraform -chdir=infra test -test-directory=tests

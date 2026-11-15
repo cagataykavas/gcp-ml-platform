@@ -1,10 +1,10 @@
 resource "google_monitoring_alert_policy" "cloud_run_5xx" {
-  display_name = "ml-inference Cloud Run 5xx"
+  display_name = "ml-inference Cloud Run 5xx response ratio"
   combiner     = "OR"
   enabled      = true
 
   conditions {
-    display_name = "Cloud Run 5xx request rate"
+    display_name = "Cloud Run 5xx / total request ratio"
 
     condition_threshold {
       filter = <<-EOT
@@ -16,17 +16,34 @@ resource "google_monitoring_alert_policy" "cloud_run_5xx" {
 
       comparison      = "COMPARISON_GT"
       threshold_value = 0.05
-      duration        = "120s"
+      duration        = "300s"
 
       aggregations {
-        alignment_period   = "60s"
-        per_series_aligner = "ALIGN_RATE"
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["resource.label.service_name"]
       }
+
+      denominator_filter = <<-EOT
+        resource.type = "cloud_run_revision"
+        AND metric.type = "run.googleapis.com/request_count"
+        AND resource.label."service_name" = "${google_cloud_run_v2_service.inference.name}"
+      EOT
+
+      denominator_aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["resource.label.service_name"]
+      }
+
+      evaluation_missing_data = "EVALUATION_MISSING_DATA_INACTIVE"
     }
   }
 
   documentation {
-    content   = "Cloud Run is returning sustained server errors. Inspect revision logs, rollout health, and downstream dependencies."
+    content   = "More than 5% of Cloud Run requests have returned 5xx responses for five minutes. Inspect revision logs, rollout health, traffic volume, and downstream dependencies."
     mime_type = "text/markdown"
   }
 
