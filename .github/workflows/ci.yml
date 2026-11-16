@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install Ruff
-        run: pip install ruff
+        run: pip install ruff==0.12.11
       - name: Ruff
         run: ruff check examples pipelines
       - name: Compile Python examples
@@ -35,3 +35,5 @@ jobs:
         run: terraform -chdir=infra init -backend=false -input=false
       - name: Terraform validate
         run: terraform -chdir=infra validate
+      - name: Terraform capacity contract tests
+        run: terraform -chdir=infra test -no-color
