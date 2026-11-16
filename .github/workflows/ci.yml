@@ -35,3 +35,5 @@ jobs:
         run: terraform -chdir=infra init -backend=false -input=false
       - name: Terraform validate
         run: terraform -chdir=infra validate
+      - name: Terraform capacity contract tests
+        run: terraform -chdir=infra test -no-color

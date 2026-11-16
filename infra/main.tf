@@ -25,6 +25,70 @@ variable "container_image" {
   description = "Immutable container image URI for the inference service."
 }
 
+variable "cloud_run_min_instances" {
+  type        = number
+  default     = 0
+  nullable    = false
+  description = "Minimum warm Cloud Run instances. Set above zero only with an explicit latency/cost decision."
+
+  validation {
+    condition = (
+      floor(var.cloud_run_min_instances) == var.cloud_run_min_instances &&
+      var.cloud_run_min_instances >= 0 &&
+      var.cloud_run_min_instances <= 100
+    )
+    error_message = "cloud_run_min_instances must be an integer in [0, 100]."
+  }
+}
+
+variable "cloud_run_max_instances" {
+  type        = number
+  default     = 10
+  nullable    = false
+  description = "Maximum Cloud Run instances, bounding regional serving capacity and cost."
+
+  validation {
+    condition = (
+      floor(var.cloud_run_max_instances) == var.cloud_run_max_instances &&
+      var.cloud_run_max_instances >= 1 &&
+      var.cloud_run_max_instances <= 100
+    )
+    error_message = "cloud_run_max_instances must be an integer in [1, 100]."
+  }
+}
+
+variable "cloud_run_max_concurrency" {
+  type        = number
+  default     = 8
+  nullable    = false
+  description = "Maximum simultaneous requests admitted to each one-vCPU inference instance."
+
+  validation {
+    condition = (
+      floor(var.cloud_run_max_concurrency) == var.cloud_run_max_concurrency &&
+      var.cloud_run_max_concurrency >= 1 &&
+      var.cloud_run_max_concurrency <= 80
+    )
+    error_message = "cloud_run_max_concurrency must be an integer in [1, 80]."
+  }
+}
+
+variable "cloud_run_request_timeout_seconds" {
+  type        = number
+  default     = 60
+  nullable    = false
+  description = "Maximum inference request duration before Cloud Run terminates the request."
+
+  validation {
+    condition = (
+      floor(var.cloud_run_request_timeout_seconds) == var.cloud_run_request_timeout_seconds &&
+      var.cloud_run_request_timeout_seconds >= 1 &&
+      var.cloud_run_request_timeout_seconds <= 300
+    )
+    error_message = "cloud_run_request_timeout_seconds must be an integer in [1, 300]."
+  }
+}
+
 provider "google" {
   project = var.project_id
   region  = var.region
@@ -138,11 +202,13 @@ resource "google_cloud_run_v2_service" "inference" {
   deletion_protection = false
 
   template {
-    service_account = google_service_account.runtime.email
+    service_account                  = google_service_account.runtime.email
+    max_instance_request_concurrency = var.cloud_run_max_concurrency
+    timeout                          = "${var.cloud_run_request_timeout_seconds}s"
 
     scaling {
-      min_instance_count = 0
-      max_instance_count = 10
+      min_instance_count = var.cloud_run_min_instances
+      max_instance_count = var.cloud_run_max_instances
     }
 
     containers {
@@ -169,6 +235,13 @@ resource "google_cloud_run_v2_service" "inference" {
         name  = "MONITORING_DATASET"
         value = google_bigquery_dataset.analytics.dataset_id
       }
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.cloud_run_min_instances <= var.cloud_run_max_instances
+      error_message = "cloud_run_min_instances cannot exceed cloud_run_max_instances."
     }
   }
 

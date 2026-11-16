@@ -57,7 +57,9 @@ The window produces features such as transaction count, amount sum/max, cross-bo
 - bucket-scoped `storage.objectViewer` access;
 - topic-scoped `pubsub.publisher` access;
 - dataset-scoped `bigquery.dataEditor` access;
-- bounded Cloud Run autoscaling and runtime configuration through resource references.
+- bounded Cloud Run autoscaling, per-instance request concurrency and request timeout;
+- fail-closed capacity validation with mocked Terraform plan tests;
+- runtime configuration through resource references.
 
 The runtime identity is intentionally separate from CI/deployment identity. The public example also does **not** grant unauthenticated invocation; ingress/authentication are deployment-policy decisions rather than something to silently make public in a portfolio Terraform file.
 
@@ -70,6 +72,25 @@ terraform validate
 ```
 
 No GCP credentials are required for those static/provider-schema checks.
+
+### Cloud Run capacity contract
+
+The inference container has one vCPU and 1 GiB of memory. Cloud Run's platform default can admit
+many concurrent requests to a single instance, which is unsafe to accept implicitly for CPU-bound
+model inference. Terraform therefore makes four reviewed controls explicit:
+
+- minimum and maximum instance counts bound the warm-capacity/cost envelope;
+- per-instance request concurrency defaults to eight rather than the platform maximum;
+- request duration is bounded to 60 seconds so abandoned work cannot consume an instance
+  indefinitely;
+- a resource precondition rejects an inverted minimum/maximum scaling envelope before apply.
+
+All controls remain configurable within conservative validation ranges because measured model
+latency and memory use—not a portfolio default—must determine production values. Native Terraform
+tests use a mocked Google provider to prove both the default contract and a reviewed override, and
+to prove that an inverted scaling envelope fails planning. This is an admission boundary, not a
+capacity claim: production still needs load tests, regional quota checks, downstream budgets,
+backpressure and alerts for saturation or rejected requests.
 
 ### BigQuery → Vertex AI scoring
 
