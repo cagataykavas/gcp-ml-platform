@@ -25,6 +25,23 @@ variable "container_image" {
   description = "Immutable container image URI for the inference service."
 }
 
+variable "monitoring_notification_channels" {
+  type        = set(string)
+  nullable    = false
+  description = "Existing Cloud Monitoring notification-channel resource names used by serving alerts."
+
+  validation {
+    condition = (
+      length(var.monitoring_notification_channels) > 0 &&
+      alltrue([
+        for channel in var.monitoring_notification_channels :
+        can(regex("^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/notificationChannels/[0-9]+$", channel))
+      ])
+    )
+    error_message = "monitoring_notification_channels must contain at least one full projects/<project-id>/notificationChannels/<numeric-id> resource name."
+  }
+}
+
 provider "google" {
   project = var.project_id
   region  = var.region

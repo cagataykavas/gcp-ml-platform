@@ -58,6 +58,8 @@ The window produces features such as transaction count, amount sum/max, cross-bo
 - topic-scoped `pubsub.publisher` access;
 - dataset-scoped `bigquery.dataEditor` access;
 - bounded Cloud Run autoscaling and runtime configuration through resource references.
+- fail-closed incident routing for Cloud Run availability and latency alerts through
+  existing, separately governed Cloud Monitoring notification channels.
 
 The runtime identity is intentionally separate from CI/deployment identity. The public example also does **not** grant unauthenticated invocation; ingress/authentication are deployment-policy decisions rather than something to silently make public in a portfolio Terraform file.
 

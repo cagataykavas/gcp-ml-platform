@@ -18,6 +18,30 @@ reduction and label sets are required for a meaningful Cloud Monitoring ratio.
 The alert opens when the ratio remains above `0.05` for five minutes. Missing
 traffic is treated as inactive rather than as an outage signal.
 
+## Incident routing contract
+
+Both Cloud Run serving policies require one or more existing Cloud Monitoring
+notification-channel resource names. Terraform rejects an empty set, short IDs,
+channel labels and malformed resource names before apply. It then binds the exact
+same sorted channel set to the 5xx-ratio and p95-latency policies.
+
+Open incidents re-notify every 30 minutes and automatically close after 30 minutes
+without observed data. Re-notification keeps a sustained serving failure visible;
+auto-close bounds stale incidents after a service stops emitting the underlying
+metric. Neither setting is a substitute for escalation policy in the downstream
+email, SMS, PagerDuty, Slack or webhook destination.
+
+Channel resources are deliberately inputs rather than repository-managed objects.
+Their endpoint configuration can contain organization-specific contact details or
+secrets and should be provisioned in a separately governed operations stack. Supply
+full names such as:
+
+```hcl
+monitoring_notification_channels = [
+  "projects/my-platform/notificationChannels/1234567890",
+]
+```
+
 ## Credential-free verification
 
 The native Terraform test uses a mocked Google provider, so it cannot create or
@@ -31,13 +55,16 @@ terraform -chdir=infra test -test-directory=tests
 ```
 
 The assertions pin the ratio threshold, numerator/denominator filters, matching
-aggregation semantics, sustained duration and missing-data behavior. A separate
-path-filtered workflow executes the same contract on pull requests that change
-infrastructure.
+aggregation semantics, sustained duration, missing-data behavior, shared channel
+routing, re-notification and stale-incident closure. Negative plans prove that an
+empty or malformed routing set fails closed. A separate path-filtered workflow
+executes the same contract on pull requests that change infrastructure.
 
 ## Limitations
 
 This policy measures server-error proportion, not customer-visible availability.
 It has no minimum-traffic condition, so one error in a very small request sample
-can still breach the ratio. Notification routing, multi-window burn-rate alerting,
-synthetic probes and deployment rollback remain deployment-specific concerns.
+can still breach the ratio. This configuration proves that incidents are routed,
+not that a human received or acknowledged them. Multi-window burn-rate alerting,
+synthetic probes, escalation and deployment rollback remain deployment-specific
+concerns.

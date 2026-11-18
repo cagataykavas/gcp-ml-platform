@@ -1,7 +1,8 @@
 resource "google_monitoring_alert_policy" "cloud_run_5xx" {
-  display_name = "ml-inference Cloud Run 5xx response ratio"
-  combiner     = "OR"
-  enabled      = true
+  display_name          = "ml-inference Cloud Run 5xx response ratio"
+  combiner              = "OR"
+  enabled               = true
+  notification_channels = sort(tolist(var.monitoring_notification_channels))
 
   conditions {
     display_name = "Cloud Run 5xx / total request ratio"
@@ -47,6 +48,15 @@ resource "google_monitoring_alert_policy" "cloud_run_5xx" {
     mime_type = "text/markdown"
   }
 
+  alert_strategy {
+    auto_close = "1800s"
+
+    notification_channel_strategy {
+      notification_channel_names = sort(tolist(var.monitoring_notification_channels))
+      renotify_interval           = "1800s"
+    }
+  }
+
   user_labels = {
     workload = "ml-platform"
     signal   = "availability"
@@ -56,9 +66,10 @@ resource "google_monitoring_alert_policy" "cloud_run_5xx" {
 }
 
 resource "google_monitoring_alert_policy" "cloud_run_latency" {
-  display_name = "ml-inference Cloud Run p95 latency"
-  combiner     = "OR"
-  enabled      = true
+  display_name          = "ml-inference Cloud Run p95 latency"
+  combiner              = "OR"
+  enabled               = true
+  notification_channels = sort(tolist(var.monitoring_notification_channels))
 
   conditions {
     display_name = "Cloud Run p95 request latency"
@@ -84,6 +95,15 @@ resource "google_monitoring_alert_policy" "cloud_run_latency" {
   documentation {
     content   = "Cloud Run p95 request latency is above one second. Check cold starts, model load time, CPU saturation, and downstream calls."
     mime_type = "text/markdown"
+  }
+
+  alert_strategy {
+    auto_close = "1800s"
+
+    notification_channel_strategy {
+      notification_channel_names = sort(tolist(var.monitoring_notification_channels))
+      renotify_interval           = "1800s"
+    }
   }
 
   user_labels = {
