@@ -53,7 +53,7 @@ resource "google_monitoring_alert_policy" "cloud_run_5xx" {
 
     notification_channel_strategy {
       notification_channel_names = sort(tolist(var.monitoring_notification_channels))
-      renotify_interval           = "1800s"
+      renotify_interval          = "1800s"
     }
   }
 
@@ -102,7 +102,7 @@ resource "google_monitoring_alert_policy" "cloud_run_latency" {
 
     notification_channel_strategy {
       notification_channel_names = sort(tolist(var.monitoring_notification_channels))
-      renotify_interval           = "1800s"
+      renotify_interval          = "1800s"
     }
   }
 

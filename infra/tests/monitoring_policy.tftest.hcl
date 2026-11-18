@@ -1,8 +1,8 @@
 mock_provider "google" {}
 
 variables {
-  project_id                       = "portfolio-monitoring-test"
-  container_image                  = "europe-west1-docker.pkg.dev/portfolio/ml/inference@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  project_id      = "portfolio-monitoring-test"
+  container_image = "europe-west1-docker.pkg.dev/portfolio/ml/inference@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   monitoring_notification_channels = [
     "projects/portfolio-monitoring-test/notificationChannels/1234567890",
     "projects/portfolio-monitoring-test/notificationChannels/9876543210",
